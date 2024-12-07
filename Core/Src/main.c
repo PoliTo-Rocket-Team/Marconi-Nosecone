@@ -48,12 +48,16 @@ I2C_HandleTypeDef hi2c1;
 SPI_HandleTypeDef hspi1;
 SPI_HandleTypeDef hspi2;
 
+TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim11;
+
 UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart5;
 UART_HandleTypeDef huart7;
 USART_HandleTypeDef husart1;
-USART_HandleTypeDef husart2;
+USART_HandleTypeDef husart3;
 UART_HandleTypeDef huart6;
+DMA_HandleTypeDef hdma_uart4_rx;
 
 /* Definitions for External_Xbee_T */
 osThreadId_t External_Xbee_THandle;
@@ -62,24 +66,46 @@ const osThreadAttr_t External_Xbee_T_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
+/* Definitions for Internal_Xbee_T */
+osThreadId_t Internal_Xbee_THandle;
+const osThreadAttr_t Internal_Xbee_T_attributes = {
+  .name = "Internal_Xbee_T",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for Internal_Xbee_R */
+osThreadId_t Internal_Xbee_RHandle;
+const osThreadAttr_t Internal_Xbee_R_attributes = {
+  .name = "Internal_Xbee_R",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
 /* USER CODE BEGIN PV */
-
+#define DMA_BUFFER_SIZE 2
+uint8_t dmaBuffer[DMA_BUFFER_SIZE];
+volatile uint16_t oldPos = 0;
+uint8_t message[45];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_SPI1_Init(void);
-static void MX_USART1_Init(void);
-static void MX_USART2_Init(void);
-static void MX_USART6_UART_Init(void);
-static void MX_UART5_Init(void);
-static void MX_ADC1_Init(void);
-static void MX_I2C1_Init(void);
 static void MX_SPI2_Init(void);
 static void MX_UART4_Init(void);
+static void MX_USART1_Init(void);
+static void MX_USART6_UART_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_TIM11_Init(void);
+static void MX_UART5_Init(void);
 static void MX_UART7_Init(void);
+static void MX_USART3_Init(void);
+static void MX_TIM3_Init(void);
 void External_Xbee_TX(void *argument);
+void Internal_Xbee_TX(void *argument);
+void Internal_Xbee_RX(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -87,6 +113,45 @@ void External_Xbee_TX(void *argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+char ACK[2] = "C0";
+void XBee_SetChannel(uint8_t channel) {
+    // Example implementation to set the XBee channel
+    uint8_t atCommand[] = { 'A', 'T', 'C', 'H', channel, '\r' };
+    HAL_UART_Transmit(&huart4, atCommand, sizeof(atCommand), 5);
+}
+
+void processMessage(uint8_t command, uint8_t data) {
+    switch ((char)command) {
+        case 'F': // Change XBee channel
+            if (data >= 0x0B && data <= 0x1A) { // Valid XBee channel range
+                XBee_SetChannel(data);
+            }
+            break;
+        case 'C': // Send ACK
+            HAL_UART_Transmit(&huart4, (uint8_t *)ACK, 2, 5);
+            break;
+        default:
+            // Handle unknown command
+            break;
+    }
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == UART4) { // Check if it's the correct UART instance
+        // Extract the received command and data
+        uint8_t command = dmaBuffer[0];
+        uint8_t data = dmaBuffer[1];
+
+        // Process the received message
+        processMessage(command, data);
+
+        // Restart DMA reception for the next message
+        HAL_UART_Receive_DMA(&huart4, dmaBuffer, DMA_BUFFER_SIZE);
+    }
+}
+
+
+
 
 /* USER CODE END 0 */
 
@@ -119,17 +184,22 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_SPI1_Init();
-  MX_USART1_Init();
-  MX_USART2_Init();
-  MX_USART6_UART_Init();
-  MX_UART5_Init();
-  MX_ADC1_Init();
-  MX_I2C1_Init();
   MX_SPI2_Init();
   MX_UART4_Init();
+  MX_USART1_Init();
+  MX_USART6_UART_Init();
+  MX_ADC1_Init();
+  MX_I2C1_Init();
+  MX_TIM11_Init();
+  MX_UART5_Init();
   MX_UART7_Init();
+  MX_USART3_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
+  HAL_UART_Receive_DMA(&huart4, dmaBuffer, DMA_BUFFER_SIZE);
+
 
   /* USER CODE END 2 */
 
@@ -155,6 +225,12 @@ int main(void)
   /* Create the thread(s) */
   /* creation of External_Xbee_T */
   External_Xbee_THandle = osThreadNew(External_Xbee_TX, NULL, &External_Xbee_T_attributes);
+
+  /* creation of Internal_Xbee_T */
+  Internal_Xbee_THandle = osThreadNew(Internal_Xbee_TX, NULL, &Internal_Xbee_T_attributes);
+
+  /* creation of Internal_Xbee_R */
+  Internal_Xbee_RHandle = osThreadNew(Internal_Xbee_RX, NULL, &Internal_Xbee_R_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -201,8 +277,8 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLM = 8;
-  RCC_OscInitStruct.PLL.PLLN = 96;
+  RCC_OscInitStruct.PLL.PLLM = 5;
+  RCC_OscInitStruct.PLL.PLLN = 100;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 2;
   RCC_OscInitStruct.PLL.PLLR = 2;
@@ -265,7 +341,7 @@ static void MX_ADC1_Init(void)
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
   */
-  sConfig.Channel = ADC_CHANNEL_9;
+  sConfig.Channel = ADC_CHANNEL_11;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
@@ -385,6 +461,101 @@ static void MX_SPI2_Init(void)
   /* USER CODE BEGIN SPI2_Init 2 */
 
   /* USER CODE END SPI2_Init 2 */
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 0;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 65535;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+  HAL_TIM_MspPostInit(&htim3);
+
+}
+
+/**
+  * @brief TIM11 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM11_Init(void)
+{
+
+  /* USER CODE BEGIN TIM11_Init 0 */
+
+  /* USER CODE END TIM11_Init 0 */
+
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM11_Init 1 */
+
+  /* USER CODE END TIM11_Init 1 */
+  htim11.Instance = TIM11;
+  htim11.Init.Prescaler = 0;
+  htim11.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim11.Init.Period = 65535;
+  htim11.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim11.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim11) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim11) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim11, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM11_Init 2 */
+
+  /* USER CODE END TIM11_Init 2 */
+  HAL_TIM_MspPostInit(&htim11);
 
 }
 
@@ -522,36 +693,36 @@ static void MX_USART1_Init(void)
 }
 
 /**
-  * @brief USART2 Initialization Function
+  * @brief USART3 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_USART2_Init(void)
+static void MX_USART3_Init(void)
 {
 
-  /* USER CODE BEGIN USART2_Init 0 */
+  /* USER CODE BEGIN USART3_Init 0 */
 
-  /* USER CODE END USART2_Init 0 */
+  /* USER CODE END USART3_Init 0 */
 
-  /* USER CODE BEGIN USART2_Init 1 */
+  /* USER CODE BEGIN USART3_Init 1 */
 
-  /* USER CODE END USART2_Init 1 */
-  husart2.Instance = USART2;
-  husart2.Init.BaudRate = 115200;
-  husart2.Init.WordLength = USART_WORDLENGTH_8B;
-  husart2.Init.StopBits = USART_STOPBITS_1;
-  husart2.Init.Parity = USART_PARITY_NONE;
-  husart2.Init.Mode = USART_MODE_TX_RX;
-  husart2.Init.CLKPolarity = USART_POLARITY_LOW;
-  husart2.Init.CLKPhase = USART_PHASE_1EDGE;
-  husart2.Init.CLKLastBit = USART_LASTBIT_DISABLE;
-  if (HAL_USART_Init(&husart2) != HAL_OK)
+  /* USER CODE END USART3_Init 1 */
+  husart3.Instance = USART3;
+  husart3.Init.BaudRate = 115200;
+  husart3.Init.WordLength = USART_WORDLENGTH_8B;
+  husart3.Init.StopBits = USART_STOPBITS_1;
+  husart3.Init.Parity = USART_PARITY_NONE;
+  husart3.Init.Mode = USART_MODE_TX_RX;
+  husart3.Init.CLKPolarity = USART_POLARITY_LOW;
+  husart3.Init.CLKPhase = USART_PHASE_1EDGE;
+  husart3.Init.CLKLastBit = USART_LASTBIT_DISABLE;
+  if (HAL_USART_Init(&husart3) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN USART2_Init 2 */
+  /* USER CODE BEGIN USART3_Init 2 */
 
-  /* USER CODE END USART2_Init 2 */
+  /* USER CODE END USART3_Init 2 */
 
 }
 
@@ -589,6 +760,22 @@ static void MX_USART6_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream2_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream2_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -600,72 +787,43 @@ static void MX_GPIO_Init(void)
 /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, Payload_CS_Pin|Ext_XBEE_CS_Pin|CAMERA_Pin|Int_XBEE_Sleep_Pin
-                          |Ext_XBEE_SPI_UART_CONF_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_LED3_Pin|GPIO_Int_XBEE_Sleep_Pin|GPIO_Int_XBEE_NRST_Pin|GPIO_LED2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LED_Pin|Write_Protect_Pin|PWM_Airbrakes_Pin|BUZZER_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_Ext_XBEE_SPI_UART_CONF_Pin|GPIO_Ext_XBEE_NRST_Pin|GPIO_Ext_XBEE_CS_Pin|GPIO_Marc_DaVinci_Sync_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(Ext_XBEE_NRST_GPIO_Port, Ext_XBEE_NRST_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_Camera_Pin|GPIO_Payload_CS_Pin|EE_Write_Protect_Pin|GPIO_LED1_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : Payload_CS_Pin Ext_XBEE_CS_Pin */
-  GPIO_InitStruct.Pin = Payload_CS_Pin|Ext_XBEE_CS_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : CAMERA_Pin Int_XBEE_Sleep_Pin */
-  GPIO_InitStruct.Pin = CAMERA_Pin|Int_XBEE_Sleep_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : LED_Pin */
-  GPIO_InitStruct.Pin = LED_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : Int_XBEE_NRST_Pin */
-  GPIO_InitStruct.Pin = Int_XBEE_NRST_Pin;
+  /*Configure GPIO pins : RTC_calibration_main_battery_removal_detect_Pin GPIO_GNSS_PPS_Input_Pin */
+  GPIO_InitStruct.Pin = RTC_calibration_main_battery_removal_detect_Pin|GPIO_GNSS_PPS_Input_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(Int_XBEE_NRST_GPIO_Port, &GPIO_InitStruct);
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : Ext_XBEE_NRST_Pin */
-  GPIO_InitStruct.Pin = Ext_XBEE_NRST_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(Ext_XBEE_NRST_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : Ext_XBEE_SPI_UART_CONF_Pin */
-  GPIO_InitStruct.Pin = Ext_XBEE_SPI_UART_CONF_Pin;
+  /*Configure GPIO pins : GPIO_LED3_Pin GPIO_Int_XBEE_Sleep_Pin GPIO_Int_XBEE_NRST_Pin GPIO_LED2_Pin */
+  GPIO_InitStruct.Pin = GPIO_LED3_Pin|GPIO_Int_XBEE_Sleep_Pin|GPIO_Int_XBEE_NRST_Pin|GPIO_LED2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(Ext_XBEE_SPI_UART_CONF_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : Write_Protect_Pin */
-  GPIO_InitStruct.Pin = Write_Protect_Pin;
+  /*Configure GPIO pins : GPIO_Ext_XBEE_SPI_UART_CONF_Pin GPIO_Ext_XBEE_NRST_Pin GPIO_Ext_XBEE_CS_Pin GPIO_Marc_DaVinci_Sync_Pin */
+  GPIO_InitStruct.Pin = GPIO_Ext_XBEE_SPI_UART_CONF_Pin|GPIO_Ext_XBEE_NRST_Pin|GPIO_Ext_XBEE_CS_Pin|GPIO_Marc_DaVinci_Sync_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(Write_Protect_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PWM_Airbrakes_Pin BUZZER_Pin */
-  GPIO_InitStruct.Pin = PWM_Airbrakes_Pin|BUZZER_Pin;
+  /*Configure GPIO pins : GPIO_Camera_Pin GPIO_Payload_CS_Pin EE_Write_Protect_Pin GPIO_LED1_Pin */
+  GPIO_InitStruct.Pin = GPIO_Camera_Pin|GPIO_Payload_CS_Pin|EE_Write_Protect_Pin|GPIO_LED1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -689,12 +847,62 @@ static void MX_GPIO_Init(void)
 void External_Xbee_TX(void *argument)
 {
   /* USER CODE BEGIN 5 */
+
+  UBaseType_t uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
+  uint32_t tick;
+  tick = osKernelGetTickCount();
+
+  /* Infinite loop */
+  for(;;)
+  {
+	  HAL_UART_Transmit(&huart4, (uint8_t *)message, sizeof(message), HAL_MAX_DELAY);
+
+	  tick += EXTERNAL_XBEE_TX_TASK_PERIOD;
+	  uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
+	  if (uxHighWaterMark)
+	  		{
+	  			__asm("nop");
+	  		}
+	  osDelayUntil(tick);
+
+  }
+  /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_Internal_Xbee_TX */
+/**
+* @brief Function implementing the Internal_Xbee_T thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_Internal_Xbee_TX */
+void Internal_Xbee_TX(void *argument)
+{
+  /* USER CODE BEGIN Internal_Xbee_TX */
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END 5 */
+  /* USER CODE END Internal_Xbee_TX */
+}
+
+/* USER CODE BEGIN Header_Internal_Xbee_RX */
+/**
+* @brief Function implementing the Internal_Xbee_R thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_Internal_Xbee_RX */
+void Internal_Xbee_RX(void *argument)
+{
+  /* USER CODE BEGIN Internal_Xbee_RX */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END Internal_Xbee_RX */
 }
 
 /**
