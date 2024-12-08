@@ -34,6 +34,10 @@ extern "C" {
 #ifndef FLIGHT_PARAMETERS_CONFIG_H
 #include "FLIGHT_PARAMETERS_CONFIG.h"
 #endif
+
+#ifndef SERVO_H
+#include "servo.h"
+#endif
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/

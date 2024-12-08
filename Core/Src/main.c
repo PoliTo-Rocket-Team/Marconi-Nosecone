@@ -58,6 +58,7 @@ USART_HandleTypeDef husart1;
 USART_HandleTypeDef husart3;
 UART_HandleTypeDef huart6;
 DMA_HandleTypeDef hdma_uart4_rx;
+DMA_HandleTypeDef hdma_usart6_rx;
 
 /* Definitions for External_Xbee_T */
 osThreadId_t External_Xbee_THandle;
@@ -73,18 +74,15 @@ const osThreadAttr_t Internal_Xbee_T_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
-/* Definitions for Internal_Xbee_R */
-osThreadId_t Internal_Xbee_RHandle;
-const osThreadAttr_t Internal_Xbee_R_attributes = {
-  .name = "Internal_Xbee_R",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
-};
 /* USER CODE BEGIN PV */
-#define DMA_BUFFER_SIZE 2
-uint8_t dmaBuffer[DMA_BUFFER_SIZE];
+#define DMA_BUFFER_SIZE_EXT 2
+#define DMA_BUFFER_SIZE_INT 4
+uint8_t dmaBuffer[DMA_BUFFER_SIZE_EXT];
+uint8_t dmaBuffer_2[DMA_BUFFER_SIZE_INT];
 volatile uint16_t oldPos = 0;
 uint8_t message[45];
+volatile float airbrakes_deg = 0.0f;
+servo_t servo = {0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -105,7 +103,6 @@ static void MX_USART3_Init(void);
 static void MX_TIM3_Init(void);
 void External_Xbee_TX(void *argument);
 void Internal_Xbee_TX(void *argument);
-void Internal_Xbee_RX(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -136,6 +133,7 @@ void processMessage(uint8_t command, uint8_t data) {
     }
 }
 
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == UART4) { // Check if it's the correct UART instance
         // Extract the received command and data
@@ -146,7 +144,19 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
         processMessage(command, data);
 
         // Restart DMA reception for the next message
-        HAL_UART_Receive_DMA(&huart4, dmaBuffer, DMA_BUFFER_SIZE);
+        HAL_UART_Receive_DMA(&huart4, dmaBuffer, DMA_BUFFER_SIZE_EXT);
+    }
+    else if (huart->Instance == USART6){
+    	float receivedValue;
+
+    	// Decode the received float from the DMA buffer
+    	memcpy(&receivedValue, dmaBuffer_2, sizeof(receivedValue));
+
+    	// Update the servo position based on the received value
+    	servo_moveto_deg(&servo,receivedValue);
+
+    	// Restart DMA reception for the next float
+    	HAL_UART_Receive_DMA(&huart6, dmaBuffer_2, DMA_BUFFER_SIZE_INT);
     }
 }
 
@@ -198,7 +208,9 @@ int main(void)
   MX_USART3_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
-  HAL_UART_Receive_DMA(&huart4, dmaBuffer, DMA_BUFFER_SIZE);
+  HAL_UART_Receive_DMA(&huart4, dmaBuffer, DMA_BUFFER_SIZE_EXT);
+  HAL_UART_Receive_DMA(&huart6, dmaBuffer_2, DMA_BUFFER_SIZE_INT);
+  servo_init(&servo);
 
 
   /* USER CODE END 2 */
@@ -228,9 +240,6 @@ int main(void)
 
   /* creation of Internal_Xbee_T */
   Internal_Xbee_THandle = osThreadNew(Internal_Xbee_TX, NULL, &Internal_Xbee_T_attributes);
-
-  /* creation of Internal_Xbee_R */
-  Internal_Xbee_RHandle = osThreadNew(Internal_Xbee_RX, NULL, &Internal_Xbee_R_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -767,11 +776,15 @@ static void MX_DMA_Init(void)
 
   /* DMA controller clock enable */
   __HAL_RCC_DMA1_CLK_ENABLE();
+  __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
   /* DMA1_Stream2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream2_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream2_IRQn);
+  /* DMA2_Stream1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream1_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream1_IRQn);
 
 }
 
@@ -879,30 +892,27 @@ void External_Xbee_TX(void *argument)
 void Internal_Xbee_TX(void *argument)
 {
   /* USER CODE BEGIN Internal_Xbee_TX */
+	uint8_t data[4];
+	UBaseType_t uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
+	uint32_t tick;
+	tick = osKernelGetTickCount();
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+
+     memcpy(data, &airbrakes_deg, sizeof(airbrakes_deg));
+     HAL_UART_Transmit(&huart6, data, sizeof(data), 5);
+
+     tick += INTERNAL_XBEE_TX_TASK_PERIOD;
+     uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
+     if (uxHighWaterMark)
+     	  {
+     	  	__asm("nop");
+     	  }
+     osDelayUntil(tick);
+
   }
   /* USER CODE END Internal_Xbee_TX */
-}
-
-/* USER CODE BEGIN Header_Internal_Xbee_RX */
-/**
-* @brief Function implementing the Internal_Xbee_R thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_Internal_Xbee_RX */
-void Internal_Xbee_RX(void *argument)
-{
-  /* USER CODE BEGIN Internal_Xbee_RX */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END Internal_Xbee_RX */
 }
 
 /**
